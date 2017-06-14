@@ -1,0 +1,208 @@
+<!DOCTYPE HTML PUBLIC "-//AdvaSoft//DTD HTML 3.2 extended 961018//EN">
+<HTML>
+<HEAD>
+ <TITLE>DLAME</TITLE>
+</HEAD>
+
+<BODY BGCOLOR="#FFFFFF">
+<H1>Distributed Lame</H1>
+<DL>
+	<DT><A HREF="#as-h3-165771">The Problem</A>
+	<DT><A HREF="#as-h3-165772">The Idea</A>
+	<DT><A HREF="#as-h3-165773">My Solution</A>
+	<DT><A HREF="#as-h3-165774">The Protocol</A>
+	<DT><A HREF="#as-h3-165775">Installation</A>
+	<DT><A HREF="#as-h3-165776">I would like to hear from You</A>
+	<DT><A HREF="#as-h3-165778">Licensing</A>
+	<DT><A HREF="Dlame.tar.gz">Download</A>
+</DL>
+
+<H3><A NAME="as-h3-165771">The Problem</A></H3>
+You have a huge number of .wav-files (or CDs/LPs that you can convert to .wav) and you have a number
+of machines running *IX. Usually You would take Your fastest machine and a software like lame, bladeenc
+or the Frauenhofersoftware to convert them to mp3's. All the other CPUs are idle and lonely \:)<BR>
+<H3><A NAME="as-h3-165772">The Idea</A></H3>
+Why not write a little framework to distribute the work. And while we're at it also create a filestructure
+that you will find Your mp3's again. The best thing would be: "Insert an audiocd start something wait a <STRONG>little</STRONG>
+and soon You will find Your MP3s. Another issue is, that ripping a whole audiocd might take up to 700MB of diskspace
+which might be an issue for some systems.<BR>
+Another issue is naming the MP3s and setting the tags right. But there is the CDDB for that. So the idea was to
+provide a framework that
+<UL>
+<LI>Parallelizes the work
+<LI>Optionally saves diskspace for ripping to a minimum
+<LI>Minimizes the stuff You have to do by hand like naming files, calling the ripper and the encoder sorting the files
+</UL>
+<H3><A NAME="as-h3-165773">My Solution</A></H3>
+The franework I designed consists of three components:
+<OL>
+<LI>The Rlamecpu (remotelamecpu) at first I wrote a little bit more of a perlscript for that, which is still
+included, but basically it is a two-line-shellscript, that turns a machine that has inetd running to a remote-encoder
+You just have to install lame, and the shellscript to the machine and edit /etc/inetd.conf and /etc/services
+<LI>The CPU-Broker (Rlamed.pl). This is a process running on one machine in the networks that is responsible for
+the management of all Rlamecpus installed in step 1. Whenever an rlameclient from point 3 wants to encode some
+wavfiles it asks the Rlamed for cpus, which it receives in the form ipaddress:portnumber. During work the Rlamec
+sends statusupdates to the daemon. After work is finished the rlamec sends a releasemessage so that
+the rlamecpu can be used by other rlamec's. A client can also get the rlamed to send statusupdates to it for 
+monitoringpurposes. Finally the rlamed supports dynamically adding and removing cpus from its pool and redistributing
+them among clients if necassary.
+<LI>The Rlameclient (Rlamec.pl) finally does the work. It contacts the cpubroker, gets the songs to work on
+either from the audiocd in the cdromdrive (since I have a cd-changer it actually is an array of devices) and from the
+cddb or from infofiles in a configurable directory. If there are no files in the directory and the actual information
+is fetchd via the cddb, the infofiles are created so they won't have to be fetched again if you interrupt the work.
+For each song it checks, if there is already a file with this Title_of_the_song.mp3 in the directory 
+"Interpreten/Name of Singer" underneath a configurable startdirectory. If the file exists nothing happens but that
+there will be a softlink created in "Interpreten/Name of Singer/Alben/Name of Album/Indexofsong_Title_of_song/mp3"
+that points to the file. Otherwise the Rlamec looks underneath another configurable directory in a directory that
+is named after the cddbid (as is the infofile by the way) if track&lt;index&gt;.cdda.way exists. If it doesn't it
+rips it from the the audiocd in the correct device using cdparanoia. If ripping is continued a process is forked
+off to read the file and send it to the rlamecpu. If this is finished the MP3 is sent back and then put in the proper
+location as stated above. The signalhandler for SIGCHLD deletes the ripped .wav-file if it thinks the MP3 was
+received correctly and then work begins on the next song. The Rlamec also receives statusupdates from it's children.
+In a later release I might use that information to get rid of the slowest CPUs first. If there are less songs left
+to work on than there are CPUs the Rlamec. releases the CPUs it doesn't need anymore. If it receives a message
+that it got an additional CPU or a CPU was deleted it either distributes an undone song to the new CPU or marks
+the deleted CPU to be released if it has finished it's current song.</OL>
+<H3><A NAME="as-h3-165774">The Protocol</A></H3>
+The Rlamed binds itself on a port that is specified in it's configfile. If a TCP-connection is created to this port
+it understand the following commands (they are case insensitive):
+<UL>
+<LI><PRE>getcpu number</PRE>
+This requests as many cpus as are stated in number. Rlamec normally requests 5 CPUs. The answer received is either
+<PRE>WAIT</PRE>
+This means there are currently no free cpus and as soon as a one gets free it will be allocated. The other answer is
+<PRE>CPU ipaddr:port</PRE>
+There are as many lines of this format as there are free CPUs but at most as many as there were requested.
+<LI><PRE>getstatus</PRE>
+The answer to this command is a list of all CPUs and their status. The answer looks something like this:
+<PRE>CPU 192.168.1.1:9999@192.168.1.1:1224|Albumname|Singer's name|Songindex Songtitle</PRE>
+Which means, that the CPU on 192.168.1.1:9999 is working for 192.168.1.1 (sourceport 1224 in its connection to the
+CPUbroker) working on albumname, from Singer's name song number songindex. You get one line per cpu. If the cpu has
+nothing to do and is not allocated you will just see ipaddress and portnumber followed by idle if it is allocated
+but idle (the rlamec is ripping for another cpu) than you will the 
+<PRE>cpu:port@client:port|idle</PRE> if the client is currently ripping a song for this cpu you will see a message
+at the end "ripping index".
+<LI><PRE>addcpu ipaddr:port</PRE>
+This adds the cpu at ipaddr:port to the pool of available CPUs. Rlamed then tries to reallocate this CPU to either
+a client that has no CPU's or a client that has less CPUs then it requested. This client receives a message like:
+<PRE>CPU 10.10.10.10:9999</PRE> and then gives it some work to do. All statusreceivers (see below) get a message
+like <PRE>CPU 10.10.10.10:9999|idle</PRE>
+<LI><PRE>delcpu ipaddr:port</PRE>
+This removes the CPU from the pool of available CPUs. If the CPU is allocated it is deleted as soon, as the clients
+that has it releases it. After this message is received by rlamed the client that has allocated gets the same message
+to mark the cpu for release if it has finished it's work. Afterwards the client sends a releasemessage to the rlamed.
+If the releasemessage is received (or the CPU was not allocated) all statusreceivers get the message forwarded.
+<LI><PRE>releasecpu ipaddr:port</PRE>
+This message can only be sent by a client that has a cpu allocated. It is either sent, when there is no work left
+for a cpu or when the delete-message was sent to a client and the cpu has finished it's work.
+<LI><PRE>sendstatusupdates</PRE>
+This makes the client that has the connection to the rlamed to a statusreceiver. Whenever the Rlamed receives a
+performanceupdate (see below) this client receives a message in the format like with getstatus but with three more
+fields which are the bytes that are already processed, the total bytes processed and the rate in bytes/second that
+this cpu processes.
+<LI><PRE>perfupdate ipaddr:port|bytesfinished|size|rate</PRE>
+This message is first sent by the rlamec masterprocess to set all fields. Later on the client's children send it with
+the size field empty, since the client does not no the size.
+<LI><PRE>quit</PRE>
+This quits the connection (as does closing the socket). Doing this will also release cpus the client might have allocated.
+</UL>
+<H3><A NAME="as-h3-165775">Installation</A></H3>
+There is one module containing some utility-routines. If you want a lib and bin configuration but it in the
+libdirectory and either call perl with -Ilib or add a BEGIN-block. Otherwise keep all files in the same directory.
+You need <A HREF="http://www.mit.edu/afs/sipb/user/xiphmont/cdparanoia/index.html" TARGET="_top">cdparanoia</A> and 
+<A HREF="http://www.sulaco.org/mp3">lame</A> for this to work. You also need MP3::Info from CPAN. If You want to
+use the statusviewer you also need Curses.pm. Next you should set up the rlamecpus. To do this
+you should create an entry in /etc/services on all machines that you want to use. That entry might look like this:
+<PRE>lame    9999/tcp</PRE>
+Be sure to theck if port 9999 isn't used for something else. Next edit /etc/inetd.conf and add an entry like the
+following 
+<PRE>lame    stream  tcp     nowait nobody /path/to/rlamecpu.sh rlamecpu.sh</PRE>
+Then install rlamecpu.sh in the directory You want it to be (whatever /path/to is in real live) and make sure, you
+don't forget the modebits for it. You also have to modify rlamecpu.sh if you have installed lame in another location
+then /usr/local/bin. Test it by doing a "telnet localhost lame" on that machine. You should see nothing. If something
+is wrong the connection will be terminated.
+You need three directories for this to work:
+<UL>
+<LI>datadir<BR>
+In this directory Rlamec.pl creates files with a filename that is the cddbid of the CD in your cdrom (might be 
+multiple).
+<LI>raw-dir<BR>
+A directory where the wav-files are ripped to. In this directory there are subdirectories with the name that is
+the cddbid of the CD to be worked in. Inside these directories the wav-files will be placed. During work You
+will also see files called "output.mp3.pid". These are the temporary files for the Rlamec-children and they
+are removed if encoding was successfull.
+<LI>mp3-dir<BR>
+This is the destinationdirectory under which the file-hierarchy for the MP3s is created.</UL>
+The Rlamed needs a configfile, which understands two commands
+<UL>
+<LI>PORT=NUMBER<BR>
+With this line you specify the portnumber for Rlamed to listen for new connections.
+<LI>CPU=ipaddr:port<BR>
+This allows you to preconfigure CPUs instead of adding them using the addcpu command (see abov). You can have
+multiple of these.</UL>
+There are two things you might want to modify in Rlamec.pl:
+<UL>
+<LI>cddb-config<BR>
+In line 375 (at least in this version but it is in the lower part of the code) you will find hardcoded the hostname
+and portnumber for the CDDB-server you want to use. You might want to set this up according to your site's
+requirements.
+<LI>DEVICES-Array<BR>
+Above the CDDB-Config You will find an array called DEVICES in which you should put the names of Your cdrom
+device(s)</UL>
+After You set everything up, we are ready to run now. First start Rlamed and test it by telnetting to the port
+that you specified in the config file. If you have the config-file in a different then the current directory call
+Rlamed with the -c option that takes the path to the configfile as argument. You might want to send the Rlamed to
+the background.In the telnet-session type<PRE>
+getstatus</PRE>
+You should see a list of cpus that you added to the configfile. If You see nothing type <PRE>
+addcpu ipaddr:port</PRE> with one of the CPUs you configured. Then type quit to close the connection.<BR>
+Next put a CD in your drive, be sure to have connectivity to the cddb you have configured and also to have set up
+the three directories mentioned above. Then type (assuming you are in the directory where you extracted the software
+to)<PRE>
+perl Rlamec.pl -m mp3dir -d raw-dir -D data-dir -r localhost:portofrlamed</PRE>
+To be able to see, what it is doing (if you have installed Curses.pm) call<PRE>
+perl Rlamestatus.pl -r localhost:portofrlamed</PRE> this is a client-viewer. If you were fast enough the rlamec
+should still be ripping the first song and You should see this in the statusviewer.
+<H4>Advanced usage</H4>
+Rlamec.pl also understands two other options:
+<UL>
+<LI>-c cdromdevice<BR>
+With this option just the cd in the named cdromdevice is worked on. This is the intersection of the DEVICES-array and
+what you enter there.
+<LI>-s songindex<BR>
+Just work on the song with the index that is passed as argument. If this is used without -c and you have
+more than one device in @DEVICES you will work on all songs with index <EM>index</EM> on all devices</UL>
+<H5>ripper.pl</H5>
+In working with more than two fast CPUs I found, that most of the time is consumed in ripping. So there is the 
+ripper-utility which takes -d and -D with the same meaning as above to rip a complete CD and create the infofiles
+needed. Be sure to have enough diskspace if you do this. Also beware of ripping and encoding in the same directories
+in parallel. If Your encoding overtakes the ripping you might get incomplete MP3s
+<H4>Bandwidth considerations</H4>
+If you are using a 10Mbit-Ethernet-connection for the machine that rips and sends out the work (the machine where
+rlamec is running) add up the bandwidths of your remotecpus because it won't get any faster if you satisfy your
+bandwidth. Also think of your colleagues if you do this at work \:)
+<H3><A NAME="as-h3-165776">I would like to</A> <A HREF="mailto:ka@netage.de">hear</A> from You</H3>
+First of all: This software is quite beta. I think it works for me but I am quite sure it has errors. So it might
+stuck. If this happens kill the Rlamed and Rlamec and check for incomplete MP3s. Afterwards start again it should
+continue.<BR>
+This documentation is really alpha and was written later at night. I might add a picture of the communcations later.
+I hope you get it working anyway.<BR>
+Next I would be interested at the rate of 'fast' CPUs. The fastest I tested was a 600Mhz PIII, which had peaks of
+250Kbyte/sec. So if you have other CPUs I would be interested in the rates you achieve there.<BR>
+Another thing: Quite some time ago I heard of something called "Postcardware" which meant that instead of paying
+something the author of the software would like to receive postcards from the users just for the fun of getting
+postcards from all over the world. So if you like the software I would be happy to get some snailmail \:)
+Snail-Address:<BR>
+Konstantin Agouros<BR>
+Otkerstr. 28<BR>
+D-81547 M&uuml;nchen<BR>
+Germany<BR>
+<H3><A NAME="as-h3-165778">Licensing</A></H3>
+This software is free of charge for use. However to use it in a commercially available product (even parts of the
+code!) you need to obtain a license from me. This is of course meant to create MP3s from CDs you bought. The software
+shall not be used to create illegal copies of MP3s.
+<HR>
+Have fun with it<BR>
+Konstantin
+</BODY>
+</HTML>
